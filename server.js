@@ -5,18 +5,17 @@ const app = express();
 
 const CID  = process.env.AVITO_CLIENT_ID;
 const CSEC = process.env.AVITO_CLIENT_SECRET;
-const REDI = process.env.AVITO_REDIRECT_URI; // https://avito-redirect.onrender.com/callback
+const REDI = process.env.AVITO_REDIRECT_URI;   // должен совпадать с Redirect URL в Avito
+const STORE_URL = process.env.TIMEWEB_STORE_URL;
+const SHARED_SECRET = process.env.SHARED_SECRET;
 
 app.get("/callback", async (req, res) => {
   const code = req.query.code || "";
-  if (!code) {
-    return res
-      .status(400)
-      .send("Нет параметра code. Авторизуйтесь через ссылку Avito.");
-  }
+  if (!code) return res.status(400).send("Нет параметра code");
 
   try {
-    const resp = await fetch("https://api.avito.ru/token/", {
+    // 1) Обмен кода на токены
+    const tokResp = await fetch("https://api.avito.ru/token/", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -24,34 +23,37 @@ app.get("/callback", async (req, res) => {
         client_id: CID,
         client_secret: CSEC,
         code,
-        redirect_uri: REDI, // ДОЛЖЕН совпадать с тем, что в кабинете Avito
-      }),
+        redirect_uri: REDI
+      })
     });
+    const data = await tokResp.json();
 
-    const data = await resp.json();
+    // 2) Отправляем токены на Timeweb
+    if (data.access_token && STORE_URL) {
+      await fetch(STORE_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-AVITO-SECRET": SHARED_SECRET
+        },
+        body: JSON.stringify({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token,
+          expires_in: data.expires_in
+        })
+      });
+    }
 
+    // 3) Короткий ответ в браузере
     if (data.access_token) {
-      // В бою: сохраните в БД/хранилище и НЕ показывайте.
-      res.type("text/plain").send(
-        [
-          "=== OAuth OK ===",
-          `access_token: ${data.access_token}`,
-          `refresh_token: ${data.refresh_token}`,
-          `expires_in: ${data.expires_in} sec`,
-        ].join("\n")
-      );
+      return res.type("text/plain").send("Токены получены и переданы на Timeweb. Можно закрыть окно.");
     } else {
-      res
-        .status(400)
-        .type("text/plain")
-        .send(`Ошибка обмена кода: ${JSON.stringify(data)}`);
+      return res.status(400).type("text/plain").send("Ошибка обмена кода: " + JSON.stringify(data));
     }
   } catch (e) {
-    res.status(500).send(`Ошибка запроса: ${e}`);
+    return res.status(500).type("text/plain").send("Ошибка: " + e);
   }
 });
 
 app.get("/", (_req, res) => res.send("OK"));
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+app.listen(process.env.PORT || 10000);
